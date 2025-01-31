@@ -1,8 +1,8 @@
 'use client'
 
-import type React from 'react'
+import { m } from 'motion/react'
+import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { m } from 'framer-motion'
 
 import { softSpringPreset } from '~/constants/spring'
 import { clsxm } from '~/lib/helper'

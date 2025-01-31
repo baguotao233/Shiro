@@ -26,12 +26,19 @@ export const $fetch = createFetch({
     headers: globalConfigureHeader,
     onRequest(context) {
       const token = getToken()
-      const headers: any = context.options.headers ?? {}
-      if (token) {
-        headers['Authorization'] = `bearer ${token}`
+      // eslint-disable-next-line prefer-destructuring
+      let headers: any = context.options.headers
+      if (headers && headers instanceof Headers) {
+        headers = Object.fromEntries(headers.entries())
+      } else {
+        headers = {}
       }
 
-      headers['x-session-uuid'] =
+      if (token) {
+        headers.Authorization = `bearer ${token}`
+      }
+
+      headers['X-Session-Uuid'] =
         globalThis?.sessionStorage?.getItem(uuidStorageKey) ?? uuid
 
       context.options.params ??= {}
@@ -40,7 +47,6 @@ export const $fetch = createFetch({
         context.options.cache = 'no-store'
       }
       if (isDev && isServerSide) {
-        // eslint-disable-next-line no-console
         console.info(`[Request]: ${context.request}`)
       }
 
@@ -49,7 +55,6 @@ export const $fetch = createFetch({
     onResponse(context) {
       // log response
       if (isDev && isServerSide) {
-        // eslint-disable-next-line no-console
         console.info(`[Response]: ${context.request}`, context.response.status)
       }
     },
@@ -66,7 +71,7 @@ export const attachFetchHeader = (key: string, value: string | null) => {
   }
 
   return () => {
-    if (typeof original === 'undefined') {
+    if (original === undefined) {
       delete globalConfigureHeader[key]
     } else {
       globalConfigureHeader[key] = original

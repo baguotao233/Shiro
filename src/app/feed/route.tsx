@@ -1,25 +1,21 @@
+import type { Image } from '@mx-space/api-client'
+import type { MarkdownToJSX } from 'markdown-to-jsx'
 import { compiler } from 'markdown-to-jsx'
 import RSS from 'rss'
 import xss from 'xss'
-import type { MarkdownToJSX } from 'markdown-to-jsx'
 
 import { CDN_HOST } from '~/app.static.config'
 import { AlertsRule as __AlertsRule } from '~/components/ui/markdown/parsers/alert'
 import { ContainerRule as __ContainerRule } from '~/components/ui/markdown/parsers/container'
 import { InsertRule } from '~/components/ui/markdown/parsers/ins'
-import {
-  KateXBlockRule as __KateXBlockRule,
-  KateXRule as __KateXRule,
-} from '~/components/ui/markdown/parsers/katex'
 import { MarkRule } from '~/components/ui/markdown/parsers/mark'
 import { MentionRule } from '~/components/ui/markdown/parsers/mention'
 import { SpoilerRule } from '~/components/ui/markdown/parsers/spoiler'
+import { get } from '~/lib/lodash'
 import { apiClient } from '~/lib/request'
 
-import { fetchAggregationData } from '../(app)/api'
-
 export const dynamic = 'force-dynamic'
-export const revalidate = 86400 // 1 day
+export const revalidate = 60
 
 interface RSSProps {
   title: string
@@ -33,6 +29,7 @@ interface RSSProps {
     title: string
     text: string
     id: string
+    images: Image[]
   }[]
 }
 
@@ -40,18 +37,39 @@ export async function GET() {
   const ReactDOM = (await import('react-dom/server')).default
 
   const [{ author, data, url }, agg] = await Promise.all([
-    fetch(apiClient.aggregate.proxy.feed.toString(true), {
-      next: {
-        revalidate: 86400,
-      },
-    }).then((res) => res.json() as Promise<RSSProps>),
-
-    fetchAggregationData(),
+    apiClient.aggregate.proxy.feed.get<RSSProps>(),
+    apiClient.aggregate.getAggregateData<AppThemeConfig>('shiro'),
   ])
 
   const { title, description } = agg.seo
 
   const now = new Date()
+  const custom_elements = get(
+    agg.$raw.theme as AppConfig,
+    'config.module.rss.custom_elements',
+  )
+
+  const followChallengeIndex = custom_elements
+    ? custom_elements.findIndex((item: any) => item.follow_challenge)
+    : -1
+  if (-~followChallengeIndex) {
+    const map = {} as Record<string, string>
+
+    const { follow_challenge } = custom_elements[followChallengeIndex]
+    for (const item of follow_challenge) {
+      Object.assign(map, item)
+    }
+
+    custom_elements[followChallengeIndex].follow_challenge = [
+      {
+        feedId: map.feed_id,
+      },
+      {
+        userId: map.user_id,
+      },
+    ]
+  }
+
   const feed = new RSS({
     title,
     description,
@@ -61,6 +79,8 @@ export async function GET() {
     image_url: `${url}${agg?.theme?.config?.site?.favicon}`,
     generator: 'Shiro (https://github.com/Innei/Shiro)',
     pubDate: now.toUTCString(),
+
+    custom_elements,
   })
 
   data.forEach((item) => {
@@ -79,13 +99,21 @@ export async function GET() {
                 Tabs: NotSupportRender,
                 Tab: NotSupportRender,
 
-                img: ({ src, alt }) => {
-                  if (src) {
-                    if (new URL(src).hostname === CDN_HOST) {
-                      return <span>此图片不支持在 RSS Render 中查看。</span>
-                    }
+                img: ({ src, alt, height, width }) => {
+                  if (src && new URL(src).hostname === CDN_HOST) {
+                    return <span>此图片不支持在 RSS Render 中查看。</span>
                   }
-                  return <img src={src} alt={alt} />
+
+                  const meta = item.images?.find((image) => image.src === src)
+
+                  return (
+                    <img
+                      src={src}
+                      alt={alt}
+                      height={height || meta?.height}
+                      width={width || meta?.width}
+                    />
+                  )
                 },
               },
               extendsRules: {
@@ -99,9 +127,20 @@ export async function GET() {
                       return <NotSupportRender />
                     }
                     return (
-                      <pre key={state.key}>
+                      <pre
+                        key={state.key}
+                        className={
+                          node.lang
+                            ? `language-${node.lang} lang-${node.lang}`
+                            : ''
+                        }
+                      >
                         <code
-                          className={node.lang ? `language-${node.lang}` : ''}
+                          className={
+                            node.lang
+                              ? `language-${node.lang} lang-${node.lang}`
+                              : ''
+                          }
                         >
                           {node.content}
                         </code>
@@ -117,8 +156,8 @@ export async function GET() {
                 mark: MarkRule,
                 ins: InsertRule,
 
-                kateX: KateXRule,
-                kateXBlock: KateXBlockRule,
+                // kateX: KateXRule,
+                // kateXBlock: KateXBlockRule,
                 container: ContainerRule,
                 alerts: AlertsRule,
               },
@@ -135,8 +174,8 @@ export async function GET() {
       } catch {
         return ReactDOM.renderToString(
           <p>
-            当前内容无法在 RSS render 中正确渲染，请前往：
-            <a href={`${xss(item.link)}`}>${xss(item.link)}</a>
+            当前内容无法在 RSS 阅读器中正确渲染，请前往：
+            <a href={`${xss(item.link)}`}>{xss(item.link)}</a>
           </p>,
         )
       }
@@ -150,38 +189,54 @@ export async function GET() {
     })
   })
 
-  return new Response(feed.xml(), {
+  return new Response(`${feed.xml()}`, {
     headers: {
       'Content-Type': 'application/xml',
-      'Cache-Control': 'max-age=60, s-maxage=86400',
-      'CDN-Cache-Control': 'max-age=86400',
-      'Cloudflare-CDN-Cache-Control': 'max-age=86400',
-      'Vercel-CDN-Cache-Control': 'max-age=86400',
+      'Cache-Control': `max-age=60, s-maxage=${revalidate}`,
+      'CDN-Cache-Control': `max-age=${revalidate}`,
+      'Cloudflare-CDN-Cache-Control': `max-age=${revalidate}`,
+      'Vercel-CDN-Cache-Control': `max-age=${revalidate}`,
     },
   })
 }
 
 const NotSupportRender = () => {
-  throw new Error('Not support render in RSS')
+  // throw new Error('Not support render in RSS')
+  return (
+    <p
+      style={{
+        padding: '6px 12px',
+        borderLeft: '2px solid #33A6B8',
+        background: '#33A6B850',
+        fontStyle: 'italic',
+        fontWeight: 500,
+      }}
+    >
+      Not support render this content in RSS render
+    </p>
+  )
 }
 
-const KateXRule: MarkdownToJSX.Rule = {
-  ...__KateXRule,
-  react(node, _, state?) {
-    return <NotSupportRender key={state?.key} />
-  },
-}
-const KateXBlockRule: MarkdownToJSX.Rule = {
-  ...__KateXBlockRule,
-  react(node, _, state?) {
-    return <NotSupportRender key={state?.key} />
-  },
-}
+// const KateXRule: MarkdownToJSX.Rule = {
+//   ...__KateXRule,
+//   react(node, _, state?) {
+//     return node
+//   },
+// }
+// const KateXBlockRule: MarkdownToJSX.Rule = {
+//   ...__KateXBlockRule,
+//   react(node, _, state?) {
+//     return <NotSupportRender key={state?.key} />
+//   },
+// }
 
 const AlertsRule: MarkdownToJSX.Rule = {
   ...__AlertsRule,
   react(node, output, state) {
-    return <NotSupportRender key={state?.key} />
+    const { body } = node.parsed
+    const bodyClean = body.replaceAll(/^> */gm, '').trim()
+
+    return <blockquote key={state.key}>{compiler(bodyClean)}</blockquote>
   },
 }
 
